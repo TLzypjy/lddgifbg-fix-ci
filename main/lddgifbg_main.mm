@@ -1061,9 +1061,10 @@ static void LDDIslandLayout(id self) {
     if (!win) { objc_autoreleasePoolPop(pool); return; }
     CGRect bb = [selfv bounds];
     // 与 CtrlLayoutHook 的 faceidF 快速过滤保持一致 (旧代码在此被 h>150 拦截, 全屏面容识别铺不到背景)
+    // 1.87: 高度上限 150 -> 520 —— 展开态岛(CallAssist 设备信息面板等, 实测 407x224)不再被拦截
     const char *fcnSelf = object_getClassName(self);
     int faceidF2 = (fcnSelf && strstr(fcnSelf, "ScenePresenterView"));
-    if (!faceidF2 && (bb.w > 460.0 || bb.h > 150.0 || bb.w < 40.0 || bb.h < 10.0)) {
+    if (!faceidF2 && (bb.w > 460.0 || bb.h > 520.0 || bb.w < 40.0 || bb.h < 10.0)) {
         objc_autoreleasePoolPop(pool); return;
     }
     static int aclog = 0;
@@ -1362,7 +1363,9 @@ static void CtrlLayoutHook(id self, SEL _cmd) {
     // 1.16: 面容识别/全屏场景呈现容器(ScenePresenterView 407x489) 例外放行快速过滤 —— 不受小岛开关控制
     const char *fcn0 = object_getClassName(self);
     int faceidF = (fcn0 && strstr(fcn0, "ScenePresenterView"));
-    if (!faceidF && (bb.w > 460.0 || bb.h > 150.0 || bb.w < 40.0 || bb.h < 10.0)) {
+    // 1.87: 高度上限 150 -> 520 —— 展开态岛(第三方插件如 CallAssist 的设备信息面板, 实测 407x224)
+    // 被旧上限拦截导致展开岛铺不上背景; 类名匹配有 Aperture/Island 限定, 放宽高度不误伤其他视图
+    if (!faceidF && (bb.w > 460.0 || bb.h > 520.0 || bb.w < 40.0 || bb.h < 10.0)) {
         // 1.15 探针: 记录认证/面容类容器(任意尺寸) —— 定位面容识别(Face ID)弹出时的容器类名/尺寸
         const char *fcn = object_getClassName(self);
         if (fcn && (strstr(fcn,"Auth")||strstr(fcn,"Face")||strstr(fcn,"Bio")||strstr(fcn,"Biometric")
@@ -1813,7 +1816,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.86dbg");
+    ProbeWrite("LDD-BUILD v1.87dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
