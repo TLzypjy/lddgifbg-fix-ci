@@ -8,6 +8,7 @@ on:
       - 'layout/**'
       - 'control'
       - 'Makefile'
+      - '*.plist'
       - '.github/workflows/build-linux.yml'
   workflow_dispatch:
 
