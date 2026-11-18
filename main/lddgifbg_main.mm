@@ -11,6 +11,7 @@
 #include <time.h>
 #include <math.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 typedef struct objc_class *Class;
 typedef struct objc_object { Class isa; } *id;
@@ -389,10 +390,16 @@ static void ApplyPos(void) {
 
 
 // ---------- 注入自检探针: 证明 dylib 已加载 / hook 已触发 ----------
-// 1.85: 探针日志整体停用(零常驻 IO)。ProbeWrite 保留为 no-op, 供调用点与历史调试恢复。
+// 1.86dbg: 临时恢复探针日志 —— 用于定位第三方插件(CallAssist 等)自绘岛面板的图层类名, 定位完成后整体停用。
 static void ProbeWrite(const char *line) {
-    (void)line;
-    return;
+    static int dirOK = 0;
+    if (!dirOK) { dirOK = 1; mkdir("/var/mobile/lddgifbg", 0755); }
+    // 连续重复行去重 —— 稳态下重复探针不逐条刷盘
+    static char gProbeLast[192] = "";
+    if (line && strncmp(line, gProbeLast, sizeof(gProbeLast)) == 0) return;
+    FILE *f = fopen("/var/mobile/lddgifbg/__plugin_probe__.txt", "a");
+    if (f) { if (line) fprintf(f, "%s\n", line); fclose(f); }
+    { strncpy(gProbeLast, line ? line : "", sizeof(gProbeLast) - 1); gProbeLast[sizeof(gProbeLast) - 1] = 0; }
 }
 
 // ---------- 素材选择: gif > 视频 > 静态图 ----------
@@ -1323,6 +1330,35 @@ static void CtrlLayoutHook(id self, SEL _cmd) {
     if (!once) { once = 1; ProbeWrite("CTRL-HOOK-FIRED"); }
     // 优化1: 尺寸快速过滤 (绝大多数视图整屏/极小, 直接跳过, 零消息开销之外的成本)
     CGRect bb = ((CGRect(*)(id, SEL))objc_msgSend)(self, sel_registerName("bounds"));
+    // 1.86dbg: 全类名发现探针 —— 岛尺寸窗口内(放宽到 h<=500 覆盖第三方自绘高面板)的每个新类记一条
+    // "类名 尺寸 <- 父视图 <- 祖父 <- 曾祖", 用于定位 CallAssist 设备信息面板等第三方自绘岛视图; 定位后移除。
+    {
+        const char *dn = object_getClassName(self);
+        if (dn && bb.w >= 40.0 && bb.w <= 520.0 && bb.h >= 20.0 && bb.h <= 500.0) {
+            static char seen[512][64]; static int seenN = 0;
+            int isNew = 1;
+            for (int k = 0; k < seenN; k++) {
+                if (strncmp(seen[k], dn, sizeof(seen[0]) - 1) == 0) { isNew = 0; break; }
+            }
+            if (isNew && seenN < 512) {
+                strncpy(seen[seenN++], dn, sizeof(seen[0]) - 1);
+                seen[seenN - 1][sizeof(seen[0]) - 1] = 0;
+                UIView *v = (UIView *)self;
+                const char *s1 = "-", *s2 = "-", *s3 = "-";
+                id p1 = ((id(*)(id, SEL))objc_msgSend)(v, sel_registerName("superview"));
+                if (p1) { s1 = object_getClassName(p1);
+                    id p2 = ((id(*)(id, SEL))objc_msgSend)(p1, sel_registerName("superview"));
+                    if (p2) { s2 = object_getClassName(p2);
+                        id p3 = ((id(*)(id, SEL))objc_msgSend)(p2, sel_registerName("superview"));
+                        if (p3) s3 = object_getClassName(p3);
+                    }
+                }
+                char lb[384];
+                snprintf(lb, sizeof(lb), "DBG-VIEW %s %.0fx%.0f <- %s <- %s <- %s", dn, bb.w, bb.h, s1, s2, s3);
+                ProbeWrite(lb);
+            }
+        }
+    }
     // 1.16: 面容识别/全屏场景呈现容器(ScenePresenterView 407x489) 例外放行快速过滤 —— 不受小岛开关控制
     const char *fcn0 = object_getClassName(self);
     int faceidF = (fcn0 && strstr(fcn0, "ScenePresenterView"));
@@ -1777,7 +1813,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.85");
+    ProbeWrite("LDD-BUILD v1.86dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
