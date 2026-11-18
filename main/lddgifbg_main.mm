@@ -1177,7 +1177,9 @@ static void LDDIslandLayout(id self) {
     // 1.89: 背景四周外扩 2pt —— 系统岛的黑色底衬(_SBAdaptiveKeyLineBackdropView 实测 129x41)比内容区
     //   (125x37) 四周大 2pt, 背景只铺内容区会在岛边缘留一圈 2pt 黑缝(用户反馈"边缘有一点点缝");
     //   外扩后恰好盖满底衬黑环, 素材可见区域多裁约 1-2%, 无感知。
-    const double kBleed = 2.0;
+    // 1.90: 外扩 2 -> 2.5pt —— 精确 2pt 覆盖时 GIF 边缘与底衬边缘反锯齿混合会留暗色发丝线,
+    //   多 0.5pt 保证完全盖过底衬边缘, 超出部分融入胶囊外阴影区不可见。
+    const double kBleed = 2.5;
     [view setFrame:MakeRect(-kBleed, -kBleed, b.w + 2.0 * kBleed, b.h + 2.0 * kBleed)];
     // 1.11: 容器是岛尺寸(40<=w<=460 && 10<=h<=150)就无条件挂到容器铺满 —— 1.9 要求"容器大于内容层"才挂,
     //   通知横幅/展开 容器≈内容层 未触发, 背景挂内容层被其可视区域裁成"左上角一小块"
@@ -1203,6 +1205,21 @@ static void LDDIslandLayout(id self) {
             } else if (((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("superview")) != (id)self) {
                 [view removeFromSuperview];
                 [self insertSubview:view atIndex:0];
+            }
+        }
+    }
+    // 1.90: 解除中间层裁切 —— 1.89 外扩 2pt 后黑环仍在(用户实测), 说明容器层(SBSystemApertureContainerView)
+    //   的 layer masksToBounds=YES 把超出内容区的外扩裁掉了。岛的胶囊外形由系统底衬(KeyLine Backdrop,
+    //   独立分支)绘制, 容器内系统内容均内缩, 解除裁切不影响系统显示; 背景靠自身胶囊圆角成形并盖满底衬黑环。
+    {
+        id p1u = [self superview];
+        if (p1u) {
+            id l1 = ((id(*)(id, SEL))objc_msgSend)(p1u, sel_registerName("layer"));
+            if (l1) ((void(*)(id, SEL, BOOL))objc_msgSend)(l1, sel_registerName("setMasksToBounds:"), NO);
+            id p2u = ((id(*)(id, SEL))objc_msgSend)(p1u, sel_registerName("superview"));
+            if (p2u) {
+                id l2 = ((id(*)(id, SEL))objc_msgSend)(p2u, sel_registerName("layer"));
+                if (l2) ((void(*)(id, SEL, BOOL))objc_msgSend)(l2, sel_registerName("setMasksToBounds:"), NO);
             }
         }
     }
@@ -1830,7 +1847,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.89dbg");
+    ProbeWrite("LDD-BUILD v1.90dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
