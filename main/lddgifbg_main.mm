@@ -1174,7 +1174,11 @@ static void LDDIslandLayout(id self) {
     }
 
     CGRect b = [self bounds];
-    [view setFrame:MakeRect(0, 0, b.w, b.h)];
+    // 1.89: 背景四周外扩 2pt —— 系统岛的黑色底衬(_SBAdaptiveKeyLineBackdropView 实测 129x41)比内容区
+    //   (125x37) 四周大 2pt, 背景只铺内容区会在岛边缘留一圈 2pt 黑缝(用户反馈"边缘有一点点缝");
+    //   外扩后恰好盖满底衬黑环, 素材可见区域多裁约 1-2%, 无感知。
+    const double kBleed = 2.0;
+    [view setFrame:MakeRect(-kBleed, -kBleed, b.w + 2.0 * kBleed, b.h + 2.0 * kBleed)];
     // 1.11: 容器是岛尺寸(40<=w<=460 && 10<=h<=150)就无条件挂到容器铺满 —— 1.9 要求"容器大于内容层"才挂,
     //   通知横幅/展开 容器≈内容层 未触发, 背景挂内容层被其可视区域裁成"左上角一小块"
     // 1.61: BG-EXTEND 判定原样恢复 1.52(=1.48) 版本 —— 用户实测 1.52 不遮系统图标:
@@ -1193,7 +1197,7 @@ static void LDDIslandLayout(id self) {
                     [view removeFromSuperview];
                     [supvB insertSubview:view atIndex:0];
                 }
-                [view setFrame:MakeRect(0, 0, sbB.w, sbB.h)];
+                [view setFrame:MakeRect(-kBleed, -kBleed, sbB.w + 2.0 * kBleed, sbB.h + 2.0 * kBleed)];
                 static int bgx = 0;
                 if (bgx < 8) { bgx++; ProbeWrite("BG-EXTEND"); }
             } else if (((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("superview")) != (id)self) {
@@ -1219,7 +1223,9 @@ static void LDDIslandLayout(id self) {
     } else {
         // 1.88: 圆角限幅 40 —— 展开态高面板(如 407x224)按 h/2=112 裁成体育场形, 与系统圆角(~40-47)不符;
         //   取值不大于系统圆角, 偏小方向由系统容器圆角兜底裁切, 形状只会更贴合不会露角
-        double crPill = b.h / 2.0;
+        // 1.89: 圆角按背景实际高度(含 2pt 外扩)计算 —— 37 高紧凑岛外扩后 41, 半径 20.5 恰好贴合系统底衬胶囊
+        CGRect fb = [view frame];
+        double crPill = fb.h / 2.0;
         if (crPill > 40.0) crPill = 40.0;
         [vlay setCornerRadius:crPill];
         [vlay setMasksToBounds:YES];
@@ -1824,7 +1830,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.88dbg");
+    ProbeWrite("LDD-BUILD v1.89dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
