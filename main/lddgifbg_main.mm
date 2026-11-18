@@ -1180,11 +1180,15 @@ static void LDDIslandLayout(id self) {
     // 1.61: BG-EXTEND 判定原样恢复 1.52(=1.48) 版本 —— 用户实测 1.52 不遮系统图标:
     //   父容器在 40..460 x 10..150 范围内即挂到父层铺满, 其余维持原样。
     //   (1.55~1.60 的各种门槛变体全部弃用)
+    // 1.88: 换父前提 "父视图 >= 内容视图" —— 展开态岛(CallAssist 设备信息面板等)内容视图 407x224,
+    //   其父视图仍是 ~407x140 的旧布局区(满足 h<=150) -> 背景被按父视图 140 高铺, 只盖住面板上半截。
+    //   紧凑态父视图(129x41) >= 内容视图(125x37)不受影响, 零回归。
     {
         id supvB = [self superview];
         if (supvB) {
             CGRect sbB = [supvB bounds];
-            if (sbB.w >= 40.0 && sbB.h >= 10.0 && sbB.w <= 460.0 && sbB.h <= 150.0) {
+            if (sbB.w >= 40.0 && sbB.h >= 10.0 && sbB.w <= 460.0 && sbB.h <= 150.0
+                && sbB.w >= b.w && sbB.h >= b.h) {
                 if (((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("superview")) != supvB) {
                     [view removeFromSuperview];
                     [supvB insertSubview:view atIndex:0];
@@ -1213,7 +1217,11 @@ static void LDDIslandLayout(id self) {
             }
         }
     } else {
-        [vlay setCornerRadius:b.h / 2.0];
+        // 1.88: 圆角限幅 40 —— 展开态高面板(如 407x224)按 h/2=112 裁成体育场形, 与系统圆角(~40-47)不符;
+        //   取值不大于系统圆角, 偏小方向由系统容器圆角兜底裁切, 形状只会更贴合不会露角
+        double crPill = b.h / 2.0;
+        if (crPill > 40.0) crPill = 40.0;
+        [vlay setCornerRadius:crPill];
         [vlay setMasksToBounds:YES];
     }
 
@@ -1816,7 +1824,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.87dbg");
+    ProbeWrite("LDD-BUILD v1.88dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
