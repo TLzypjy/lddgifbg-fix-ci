@@ -1364,6 +1364,26 @@ static void LDDIslandLayout(id self);
 static void CtrlLayoutHook(id self, SEL _cmd) {
     static int once = 0;
     if (!once) { once = 1; ProbeWrite("CTRL-HOOK-FIRED"); }
+    // 1.93: 挖孔黑幕布透明化 —— 展开横幅中间的黑块 + 四周黑边的根源。
+    //   系统画了两层黑色遮罩压在背景之上:
+    //     _SBSystemApertureMagiciansCurtainView (魔术幕布, 展开态挖孔区保持纯黑, 实测 125x37)
+    //     _SBAdaptiveKeyLineBackdropView        (KeyLine 黑色底衬, 实测 129x41)
+    //   1.89~1.92 的外扩/解除裁切都无效, 因为黑层在背景之上, 背景再大也被盖住。
+    //   背景启用(cEnabled)时把这层设透明 -> 背景独占岛视觉; 关闭时恢复 alpha=1 -> 系统原生黑岛不变。
+    //   只处理这两类类名, 不影响其他视图; 每层每次布局比对当前 alpha, 无重复开销。
+    {
+        const char *bcn = object_getClassName(self);
+        if (bcn && (strstr(bcn, "MagiciansCurtain") || strstr(bcn, "AdaptiveKeyLineBackdrop"))) {
+            SEL ga = sel_registerName("alpha");
+            double ca = ((double(*)(id, SEL))objc_msgSend)(self, ga);
+            double want = cEnabled ? 0.0 : 1.0;
+            if ((want == 0.0 && ca > 0.001) || (want == 1.0 && ca < 0.999)) {
+                ((void(*)(id, SEL, double))objc_msgSend)(self, sel_registerName("setAlpha:"), want);
+                static int hbLog = 0;
+                if (hbLog < 6) { hbLog++; ProbeWrite(want == 0.0 ? "HOLE-BLACK-HIDE" : "HOLE-BLACK-RESTORE"); }
+            }
+        }
+    }
     // 优化1: 尺寸快速过滤 (绝大多数视图整屏/极小, 直接跳过, 零消息开销之外的成本)
     CGRect bb = ((CGRect(*)(id, SEL))objc_msgSend)(self, sel_registerName("bounds"));
     // 1.86dbg: 全类名发现探针 —— 岛尺寸窗口内(放宽到 h<=500 覆盖第三方自绘高面板)的每个新类记一条
@@ -1851,7 +1871,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.92dbg");
+    ProbeWrite("LDD-BUILD v1.93dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
