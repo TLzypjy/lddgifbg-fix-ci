@@ -1184,11 +1184,17 @@ static void LDDIslandLayout(id self) {
     // 1.61: BG-EXTEND 判定原样恢复 1.52(=1.48) 版本 —— 用户实测 1.52 不遮系统图标:
     //   父容器在 40..460 x 10..150 范围内即挂到父层铺满, 其余维持原样。
     //   (1.55~1.60 的各种门槛变体全部弃用)
+    // 1.96: 恢复 1.88 的换父守卫 "父视图须完全包含内容视图" —— 展开态大面板(电池/设备信息,
+    //   内容视图约 407x224)的父视图仍是 ~407x140 的旧布局区(满足 h<=150), 无守卫时背景被挂到
+    //   父视图按 140 高铺, 只盖住面板一部分(用户实测 1.95 大岛没铺满)。紧凑态父视图(129x41)
+    //   本来就完整包含内容视图(125x37), 守卫零回归; 此守卫与黑药丸/黑边无关(那是外扩/解除裁切
+    //   /幕布干预引入的, 已在 1.95 回退), 属于 1.88 的正确修正。
     {
         id supvB = [self superview];
         if (supvB) {
             CGRect sbB = [supvB bounds];
-            if (sbB.w >= 40.0 && sbB.h >= 10.0 && sbB.w <= 460.0 && sbB.h <= 150.0) {
+            if (sbB.w >= 40.0 && sbB.h >= 10.0 && sbB.w <= 460.0 && sbB.h <= 150.0
+                && sbB.w >= b.w && sbB.h >= b.h) {
                 if (((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("superview")) != supvB) {
                     [view removeFromSuperview];
                     [supvB insertSubview:view atIndex:0];
@@ -1217,7 +1223,13 @@ static void LDDIslandLayout(id self) {
             }
         }
     } else {
-        [vlay setCornerRadius:b.h / 2.0];
+        // 1.96: 恢复 1.88 的圆角限幅 40 —— 展开态高面板(约 407x224)按 b.h/2=112 裁成体育场形,
+        //   背景自身四角被裁掉, 面板顶部两角露出黑底(用户实测 1.95 顶部两角露黑)。
+        //   取值不大于系统圆角(~40-47), 偏小方向由系统容器圆角兜底, 形状只会更贴合不会露角。
+        //   紧凑岛(37 高)半径 18.5 不受影响; 此改动只裁背景自身, 不碰父层/幕布, 与黑药丸/黑边无关。
+        double crPill = b.h / 2.0;
+        if (crPill > 40.0) crPill = 40.0;
+        [vlay setCornerRadius:crPill];
         [vlay setMasksToBounds:YES];
     }
 
