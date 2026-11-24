@@ -44,6 +44,7 @@ static id CLSSTR(const char *n) { return (id)objc_getClass(n); }
 + (id)alloc;
 + (id)class;
 - (id)performSelector:(SEL)s;
+- (BOOL)respondsToSelector:(SEL)s;
 - (id)init;
 - (id)valueForKey:(id)k;
 - (void)setValue:(id)v forKey:(id)k;
