@@ -1174,33 +1174,26 @@ static void LDDIslandLayout(id self) {
     }
 
     CGRect b = [self bounds];
-    // 1.89: 背景四周外扩 2pt —— 系统岛的黑色底衬(_SBAdaptiveKeyLineBackdropView 实测 129x41)比内容区
-    //   (125x37) 四周大 2pt, 背景只铺内容区会在岛边缘留一圈 2pt 黑缝(用户反馈"边缘有一点点缝");
-    //   外扩后恰好盖满底衬黑环, 素材可见区域多裁约 1-2%, 无感知。
-    // 1.92: 外扩恢复 2pt —— 底衬(_SBAdaptiveKeyLineBackdropView 129x41)比内容区(125x37)四周各大 2pt,
-    //   外扩 2pt 后背景 129x41 与底衬完全重合(圆角 20.5 也一致), 不留黑环也不溢出岛外。
-    //   1.90 的 2.5pt 会超出底衬 0.5pt, 解除裁切后在岛外露出一圈。
-    const double kBleed = 2.0;
-    [view setFrame:MakeRect(-kBleed, -kBleed, b.w + 2.0 * kBleed, b.h + 2.0 * kBleed)];
+    // 1.95: 回退 1.89~1.94 的外扩/解除裁切/圆角限幅到 v1.85 原样 —— 用户实测 v1.85 没有黑药丸
+    //   孤立、也没有四周黑边; 从 1.89 起的外扩+解除 masksToBounds 破坏了系统容器原有的裁切与幕布
+    //   遮盖关系, 才导致开孔黑药丸暴露和边缘黑缝。这里恢复 v1.85: 背景按 bounds 铺, 只裁自身圆角,
+    //   不碰父层裁切、不透明化系统幕布。
+    [view setFrame:MakeRect(0, 0, b.w, b.h)];
     // 1.11: 容器是岛尺寸(40<=w<=460 && 10<=h<=150)就无条件挂到容器铺满 —— 1.9 要求"容器大于内容层"才挂,
     //   通知横幅/展开 容器≈内容层 未触发, 背景挂内容层被其可视区域裁成"左上角一小块"
     // 1.61: BG-EXTEND 判定原样恢复 1.52(=1.48) 版本 —— 用户实测 1.52 不遮系统图标:
     //   父容器在 40..460 x 10..150 范围内即挂到父层铺满, 其余维持原样。
     //   (1.55~1.60 的各种门槛变体全部弃用)
-    // 1.88: 换父前提 "父视图 >= 内容视图" —— 展开态岛(CallAssist 设备信息面板等)内容视图 407x224,
-    //   其父视图仍是 ~407x140 的旧布局区(满足 h<=150) -> 背景被按父视图 140 高铺, 只盖住面板上半截。
-    //   紧凑态父视图(129x41) >= 内容视图(125x37)不受影响, 零回归。
     {
         id supvB = [self superview];
         if (supvB) {
             CGRect sbB = [supvB bounds];
-            if (sbB.w >= 40.0 && sbB.h >= 10.0 && sbB.w <= 460.0 && sbB.h <= 150.0
-                && sbB.w >= b.w && sbB.h >= b.h) {
+            if (sbB.w >= 40.0 && sbB.h >= 10.0 && sbB.w <= 460.0 && sbB.h <= 150.0) {
                 if (((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("superview")) != supvB) {
                     [view removeFromSuperview];
                     [supvB insertSubview:view atIndex:0];
                 }
-                [view setFrame:MakeRect(-kBleed, -kBleed, sbB.w + 2.0 * kBleed, sbB.h + 2.0 * kBleed)];
+                [view setFrame:MakeRect(0, 0, sbB.w, sbB.h)];
                 static int bgx = 0;
                 if (bgx < 8) { bgx++; ProbeWrite("BG-EXTEND"); }
             } else if (((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("superview")) != (id)self) {
@@ -1209,27 +1202,7 @@ static void LDDIslandLayout(id self) {
             }
         }
     }
-    // 1.90: 解除中间层裁切 —— 1.89 外扩 2pt 后黑环仍在(用户实测), 说明容器层(SBSystemApertureContainerView)
-    //   的 layer masksToBounds=YES 把超出内容区的外扩裁掉了。岛的胶囊外形由系统底衬(KeyLine Backdrop,
-    //   独立分支)绘制, 容器内系统内容均内缩, 解除裁切不影响系统显示; 背景靠自身胶囊圆角成形并盖满底衬黑环。
-    {
-        // 1.92: 关键 —— v1.90 只解除了父层/祖父层, 漏了 self 自身。背景挂在 self 上时(岛宽度 > 父容器,
-        //   BG-EXTEND 不触发), 正是 self.layer 的 masksToBounds 把外扩部分裁掉 => 黑环一直在。
-        //   这里连 self 一起解除; 背景靠自身胶囊圆角成形, 系统图标均内缩在 bounds 内, 不会溢出。
-        id l0 = [self layer];
-        if (l0) ((void(*)(id, SEL, BOOL))objc_msgSend)(l0, sel_registerName("setMasksToBounds:"), NO);
-        id p1u = [self superview];
-        if (p1u) {
-            id l1 = ((id(*)(id, SEL))objc_msgSend)(p1u, sel_registerName("layer"));
-            if (l1) ((void(*)(id, SEL, BOOL))objc_msgSend)(l1, sel_registerName("setMasksToBounds:"), NO);
-            id p2u = ((id(*)(id, SEL))objc_msgSend)(p1u, sel_registerName("superview"));
-            if (p2u) {
-                id l2 = ((id(*)(id, SEL))objc_msgSend)(p2u, sel_registerName("layer"));
-                if (l2) ((void(*)(id, SEL, BOOL))objc_msgSend)(l2, sel_registerName("setMasksToBounds:"), NO);
-            }
-        }
-    }
-    // 药丸圆角, 贴合灵动岛形状 (容器层裁切)
+    // 药丸圆角, 贴合灵动岛形状 (容器层裁切) —— v1.85 原样, 只裁自身, 不动父层
     id vlay = [view layer];
     // 1.9.173: 近方形容器(如付款面容验证圈)不再裁成正圆 —— 圆角限幅 8px, 并把背景扩展到父容器(弹窗内容层)尝试铺满整个方框
     // 正常横幅/直播横条(宽>=1.5倍高)保持原药丸圆角与尺寸, 零回归
@@ -1244,13 +1217,7 @@ static void LDDIslandLayout(id self) {
             }
         }
     } else {
-        // 1.88: 圆角限幅 40 —— 展开态高面板(如 407x224)按 h/2=112 裁成体育场形, 与系统圆角(~40-47)不符;
-        //   取值不大于系统圆角, 偏小方向由系统容器圆角兜底裁切, 形状只会更贴合不会露角
-        // 1.89: 圆角按背景实际高度(含 2pt 外扩)计算 —— 37 高紧凑岛外扩后 41, 半径 20.5 恰好贴合系统底衬胶囊
-        CGRect fb = [view frame];
-        double crPill = fb.h / 2.0;
-        if (crPill > 40.0) crPill = 40.0;
-        [vlay setCornerRadius:crPill];
+        [vlay setCornerRadius:b.h / 2.0];
         [vlay setMasksToBounds:YES];
     }
 
@@ -1364,24 +1331,8 @@ static void LDDIslandLayout(id self);
 static void CtrlLayoutHook(id self, SEL _cmd) {
     static int once = 0;
     if (!once) { once = 1; ProbeWrite("CTRL-HOOK-FIRED"); }
-    // 1.94: 回退 1.93 的挖孔黑幕布透明化 —— 用户实测 1.93 把幕布设透明后,
-    //   前置摄像头圆孔与听筒横条失去了黑幕布的统一遮盖, 孤立地突兀在彩色背景上(两个黑圈),
-    //   且部分帧被系统改回 alpha=1 导致黑边闪烁。原本摄像头/听筒开孔融在整块黑岛里不可见。
-    //   这里改为无条件把这两层黑幕布恢复 alpha=1 —— 既能修复从 1.93 升级上来的残留透明态,
-    //   也保持系统原生黑岛(开孔被遮盖)的视觉。背景仍由 1.90~1.92 的外扩/解除裁切铺到边缘,
-    //   幕布只覆盖开孔区, 二者各安其位。
-    {
-        const char *bcn = object_getClassName(self);
-        if (bcn && (strstr(bcn, "MagiciansCurtain") || strstr(bcn, "AdaptiveKeyLineBackdrop"))) {
-            SEL ga = sel_registerName("alpha");
-            double ca = ((double(*)(id, SEL))objc_msgSend)(self, ga);
-            if (ca < 0.999) {
-                ((void(*)(id, SEL, double))objc_msgSend)(self, sel_registerName("setAlpha:"), 1.0);
-                static int hbLog = 0;
-                if (hbLog < 6) { hbLog++; ProbeWrite("HOLE-BLACK-RESTORE"); }
-            }
-        }
-    }
+    // 1.95: v1.93/1.94 的幕布 alpha 干预全部移除 —— 回到 v1.85: 不碰系统黑幕布,
+    //   让系统原生把摄像头/听筒开孔遮成完整黑岛(用户实测 v1.85 无黑药丸孤立、无黑边)。
     // 优化1: 尺寸快速过滤 (绝大多数视图整屏/极小, 直接跳过, 零消息开销之外的成本)
     CGRect bb = ((CGRect(*)(id, SEL))objc_msgSend)(self, sel_registerName("bounds"));
     // 1.86dbg: 全类名发现探针 —— 岛尺寸窗口内(放宽到 h<=500 覆盖第三方自绘高面板)的每个新类记一条
