@@ -1364,23 +1364,21 @@ static void LDDIslandLayout(id self);
 static void CtrlLayoutHook(id self, SEL _cmd) {
     static int once = 0;
     if (!once) { once = 1; ProbeWrite("CTRL-HOOK-FIRED"); }
-    // 1.93: 挖孔黑幕布透明化 —— 展开横幅中间的黑块 + 四周黑边的根源。
-    //   系统画了两层黑色遮罩压在背景之上:
-    //     _SBSystemApertureMagiciansCurtainView (魔术幕布, 展开态挖孔区保持纯黑, 实测 125x37)
-    //     _SBAdaptiveKeyLineBackdropView        (KeyLine 黑色底衬, 实测 129x41)
-    //   1.89~1.92 的外扩/解除裁切都无效, 因为黑层在背景之上, 背景再大也被盖住。
-    //   背景启用(cEnabled)时把这层设透明 -> 背景独占岛视觉; 关闭时恢复 alpha=1 -> 系统原生黑岛不变。
-    //   只处理这两类类名, 不影响其他视图; 每层每次布局比对当前 alpha, 无重复开销。
+    // 1.94: 回退 1.93 的挖孔黑幕布透明化 —— 用户实测 1.93 把幕布设透明后,
+    //   前置摄像头圆孔与听筒横条失去了黑幕布的统一遮盖, 孤立地突兀在彩色背景上(两个黑圈),
+    //   且部分帧被系统改回 alpha=1 导致黑边闪烁。原本摄像头/听筒开孔融在整块黑岛里不可见。
+    //   这里改为无条件把这两层黑幕布恢复 alpha=1 —— 既能修复从 1.93 升级上来的残留透明态,
+    //   也保持系统原生黑岛(开孔被遮盖)的视觉。背景仍由 1.90~1.92 的外扩/解除裁切铺到边缘,
+    //   幕布只覆盖开孔区, 二者各安其位。
     {
         const char *bcn = object_getClassName(self);
         if (bcn && (strstr(bcn, "MagiciansCurtain") || strstr(bcn, "AdaptiveKeyLineBackdrop"))) {
             SEL ga = sel_registerName("alpha");
             double ca = ((double(*)(id, SEL))objc_msgSend)(self, ga);
-            double want = cEnabled ? 0.0 : 1.0;
-            if ((want == 0.0 && ca > 0.001) || (want == 1.0 && ca < 0.999)) {
-                ((void(*)(id, SEL, double))objc_msgSend)(self, sel_registerName("setAlpha:"), want);
+            if (ca < 0.999) {
+                ((void(*)(id, SEL, double))objc_msgSend)(self, sel_registerName("setAlpha:"), 1.0);
                 static int hbLog = 0;
-                if (hbLog < 6) { hbLog++; ProbeWrite(want == 0.0 ? "HOLE-BLACK-HIDE" : "HOLE-BLACK-RESTORE"); }
+                if (hbLog < 6) { hbLog++; ProbeWrite("HOLE-BLACK-RESTORE"); }
             }
         }
     }
