@@ -63,6 +63,7 @@ static id CLSSTR(const char *n) { return (id)objc_getClass(n); }
 - (double)doubleValue;
 - (NSString *)stringByAppendingPathComponent:(NSString *)s;
 - (NSString *)pathExtension;
+- (const char *)UTF8String;
 - (NSString *)lowercaseString;
 - (NSString *)lastPathComponent;
 - (BOOL)isEqualToString:(NSString *)s;
@@ -106,6 +107,20 @@ static id CLSSTR(const char *n) { return (id)objc_getClass(n); }
 @end
 @interface NSData : NSObject
 + (id)dataWithContentsOfFile:(NSString *)p;
+@end
+// 1.91: NSInvocation —— ARM64 上传 CMTime(24字节大结构体)必须走它按签名编组,
+//   裸 objc_msgSend 函数指针传大结构体 -> 参数错位/野指针, 信号级崩溃 @try 抓不住
+@interface NSMethodSignature : NSObject
+@end
+@interface NSInvocation : NSObject
++ (id)invocationWithMethodSignature:(id)sig;
+- (void)setSelector:(SEL)s;
+- (void)setArgument:(void *)buf atIndex:(NSInteger)i;
+- (void)invokeWithTarget:(id)t;
+- (void)getReturnValue:(void *)buf;
+@end
+@interface NSObject (LDDMethodSig)
+- (id)methodSignatureForSelector:(SEL)s;
 @end
 @interface NSNumber : NSObject
 + (id)numberWithDouble:(double)d;
@@ -693,30 +708,45 @@ static id ThumbForPath(NSString *path) {
         }
         return nil;
     }
-    if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"]) {
-        if (gAVF) {
-            NSURL *url = [NSURL fileURLWithPath:path];
-            typedef id (*FnA)(id, SEL, NSURL *, id);
-            FnA fna = (FnA)objc_msgSend;
-            id asset = fna((id)CLSSTR("AVURLAsset"), sel_registerName("URLAssetWithURL:options:"), url, nil);
-            if (asset) {
-                id gen = ((id(*)(id, SEL, id))objc_msgSend)((id)CLSSTR("AVAssetImageGenerator"), sel_registerName("assetImageGeneratorWithAsset:"), asset);
-                if (gen) {
-                    [gen setValue:[NSNumber numberWithBool:YES] forKey:@"appliesPreferredTrackTransform"];
-                    struct CMTimeRaw { long long value; int timescale; unsigned flags; long long epoch; };
-                    struct CMTimeRaw t = {1, 1, 1, 0};
-                    // copyCGImageAtTime:actualTime:error:  (CMTime 按值经 x2/x3)
-                    typedef id (*Fn)(id, SEL, struct CMTimeRaw, void *, void *);
-                    Fn fn = (Fn)objc_msgSend;
-                    CGImageRef cg = (__bridge CGImageRef)(fn(gen, sel_registerName("copyCGImageAtTime:actualTime:error:"), t, 0, 0));
-                    if (cg) {
-                        UIImage *img = [UIImage imageWithCGImage:cg scale:1.0 orientation:0];
-                        CFRelease((void *)cg);
-                        return img;
+    if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
+        // 1.91 崩溃修复: 视频缩略图生成全程 @try + 用 NSInvocation 编组 CMTime(24字节结构体)。
+        //   旧代码用裸 objc_msgSend 函数指针传 CMTime —— ARM64 大结构体不能这样传, 参数错位导致
+        //   AVFoundation 内部拿到非法时间值 -> SIGSEGV(信号级, @try 抓不住) -> 设置页闪退。
+        //   缩略图只是素材卡片的预览, 失败返回 nil 用占位图, 绝不能让它拖垮整个设置页。
+        @try {
+            if (gAVF) {
+                NSURL *url = [NSURL fileURLWithPath:path];
+                typedef id (*FnA)(id, SEL, NSURL *, id);
+                FnA fna = (FnA)objc_msgSend;
+                id asset = fna((id)CLSSTR("AVURLAsset"), sel_registerName("URLAssetWithURL:options:"), url, nil);
+                if (asset) {
+                    id gen = ((id(*)(id, SEL, id))objc_msgSend)((id)CLSSTR("AVAssetImageGenerator"), sel_registerName("assetImageGeneratorWithAsset:"), asset);
+                    if (gen) {
+                        ((void(*)(id, SEL, id, id))objc_msgSend)(gen, sel_registerName("setValue:forKey:"), [NSNumber numberWithBool:YES], @"appliesPreferredTrackTransform");
+                        SEL sel = sel_registerName("copyCGImageAtTime:actualTime:error:");
+                        id sig = [gen methodSignatureForSelector:sel];
+                        if (sig) {
+                            id inv = [NSInvocation invocationWithMethodSignature:sig];
+                            if (inv) {
+                                [inv setSelector:sel];
+                                // CMTime 内存布局: value(int64) timescale(int32) flags(uint32) epoch(int64) = 24字节
+                                struct CMTimeRaw { long long value; int timescale; unsigned flags; long long epoch; };
+                                struct CMTimeRaw t = {1, 600, 1, 0}; // 1/600 秒处的首帧; flags=1(kCMTimeFlags_Valid)
+                                [inv setArgument:&t atIndex:2];
+                                [inv invokeWithTarget:gen];
+                                CGImageRef cg = 0;
+                                [inv getReturnValue:&cg];
+                                if (cg) {
+                                    UIImage *img = [UIImage imageWithCGImage:cg scale:1.0 orientation:0];
+                                    CFRelease((void *)cg);
+                                    if (img) return img;
+                                }
+                            }
+                        }
                     }
                 }
             }
-        }
+        } @catch (id e) { /* 缩略图失败一律静默降级, 不影响素材库显示 */ }
         return nil;
     }
     return [UIImage imageWithContentsOfFile:path];
@@ -1238,11 +1268,22 @@ static void LDDNotifyMatChanged(void) {
     [self presentViewController:pc animated:YES completion:0];
 }
 - (void)openFiles {
-    id utImage = ((id(*)(id, SEL))objc_msgSend)((id)objc_getClass("UTType"), sel_registerName("image"));
-    id utMovie = ((id(*)(id, SEL))objc_msgSend)((id)objc_getClass("UTType"), sel_registerName("movie"));
-    UIDocumentPickerViewController *dp = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:[NSArray arrayWithObjects:utImage, utMovie, nil]];
-    [dp setDelegate:self];
-    [self presentViewController:dp animated:YES completion:0];
+    // 1.91: UTType 在低版本 iOS 可能为 Nil -> arrayWithObjects 提前截断成空; 逐个判空 + 兜底 public.* 类型
+    @try {
+        id utc = (id)objc_getClass("UTType");
+        id utImage = utc ? ((id(*)(id, SEL))objc_msgSend)(utc, sel_registerName("image")) : nil;
+        id utMovie = utc ? ((id(*)(id, SEL))objc_msgSend)(utc, sel_registerName("movie")) : nil;
+        NSMutableArray *types = [NSMutableArray array];
+        if (utImage) [types addObject:utImage];
+        if (utMovie) [types addObject:utMovie];
+        if ([types count] == 0) {
+            PwB("OPENFILES-NOTYPE");
+            return;
+        }
+        UIDocumentPickerViewController *dp = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types];
+        [dp setDelegate:self];
+        [self presentViewController:dp animated:YES completion:0];
+    } @catch (id e) { PwB("OPENFILES-EXC"); }
 }
 // 相册回调
 - (void)imagePickerController:(id)picker didFinishPickingMediaWithInfo:(id)info {
@@ -1279,14 +1320,29 @@ static void LDDNotifyMatChanged(void) {
 }
 // 文件回调
 - (void)documentPicker:(id)controller didPickDocumentsAtURLs:(id)urls {
-    _pendImg = 0;
-    _pendURL = [urls objectAtIndex:0];
-    // 按扩展名识别视频 —— 旧逻辑恒 NO, 从"文件"导入的 mp4/mov 被存成 imported.jpg,
-    // 素材加载当静态图解码失败 -> 岛上红块
-    NSString *dpExt = [[_pendURL pathExtension] lowercaseString];
-    _pendVideo = [dpExt isEqualToString:@"mp4"] || [dpExt isEqualToString:@"mov"] || [dpExt isEqualToString:@"m4v"];
-    [self dismissViewControllerAnimated:YES completion:0];
-    [self performSelector:@selector(showNaming) withObject:0 afterDelay:0.5];
+    // 1.91: 整段兜底 + 判空 —— 旧代码 urls 为空时 objectAtIndex:0 直接抛异常崩设置页
+    @try {
+        _pendImg = 0;
+        _pendURL = nil;
+        if (!urls || ![urls respondsToSelector:@selector(count)] || [(NSArray *)urls count] == 0) {
+            PwB("DP-PICK-EMPTY");
+            [self dismissViewControllerAnimated:YES completion:0];
+            return;
+        }
+        _pendURL = [(NSArray *)urls objectAtIndex:0];
+        if (!_pendURL) {
+            PwB("DP-PICK-NILURL");
+            [self dismissViewControllerAnimated:YES completion:0];
+            return;
+        }
+        // 按扩展名识别视频 —— 旧逻辑恒 NO, 从"文件"导入的 mp4/mov 被存成 imported.jpg,
+        // 素材加载当静态图解码失败 -> 岛上红块
+        NSString *dpExt = [[_pendURL pathExtension] lowercaseString];
+        _pendVideo = [dpExt isEqualToString:@"mp4"] || [dpExt isEqualToString:@"mov"] || [dpExt isEqualToString:@"m4v"];
+        { char bl[128]; snprintf(bl, sizeof(bl), "DP-PICK video=%d ext=%s", _pendVideo, dpExt ? [dpExt UTF8String] : "nil"); PwB(bl); }
+        [self dismissViewControllerAnimated:YES completion:0];
+        [self performSelector:@selector(showNaming) withObject:0 afterDelay:0.5];
+    } @catch (id e) { PwB("DP-PICK-EXC"); }
 }
 - (void)documentPickerWasCancelled:(id)controller {
     [self dismissViewControllerAnimated:YES completion:0];
@@ -1325,11 +1381,12 @@ static void LDDNotifyMatChanged(void) {
         id data = UIImageJPEGRepresentation(img, 0.85);
         ok = [data writeToFile:[dir stringByAppendingPathComponent:@"imported.jpg"] atomically:YES];
     } else if (srcURL) {
-        // 保留真实扩展名: 视频按来源(mp4/mov/m4v), 图片按来源(png/jpg/jpeg); 未知才用兜底
+        // 1.91: 视频扩展名归一化 —— m4v 本质是 mp4 容器, 但主插件 loadMedia 只认 mp4/mov,
+        //   直接存 m4v 会导致背景铺不上; 统一存成 mp4 保证端到端一致。图片保留原扩展名。
         NSString *srcExt = [[srcURL pathExtension] lowercaseString];
         NSString *ext;
         if (isVideo) {
-            ext = ([srcExt isEqualToString:@"mp4"] || [srcExt isEqualToString:@"mov"] || [srcExt isEqualToString:@"m4v"]) ? srcExt : @"mov";
+            ext = [srcExt isEqualToString:@"mov"] ? @"mov" : @"mp4";  // mp4/m4v/未知 -> mp4
         } else {
             ext = ([srcExt isEqualToString:@"png"] || [srcExt isEqualToString:@"jpg"] || [srcExt isEqualToString:@"jpeg"]) ? srcExt : @"jpg";
         }
@@ -1385,7 +1442,7 @@ static void LDDNotifyMatChanged(void) {
         for (NSString *f in files) {
             NSString *ext = [[f pathExtension] lowercaseString];
             if ([ext isEqualToString:@"gif"]) { typeTag = @"GIF"; if (!thumb) thumb = ThumbForPath([full stringByAppendingPathComponent:f]); break; }
-            if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"]) { typeTag = @"视频"; hasVideo = YES; if (!thumb) thumb = ThumbForPath([full stringByAppendingPathComponent:f]); }
+            if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) { typeTag = @"视频"; hasVideo = YES; if (!thumb) thumb = ThumbForPath([full stringByAppendingPathComponent:f]); }
             if ([ext isEqualToString:@"png"] || [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"]) { typeTag = @"图片"; if (!thumb) thumb = ThumbForPath([full stringByAppendingPathComponent:f]); }
         }
         if (thumb) [_thumbs setObject:thumb forKeyedSubscript:name];
@@ -1744,7 +1801,7 @@ static void LDDPreviewSize(double bw, double *piw, double *pih) {
     [fv addSubview:l1];
     UILabel *l2 = [[UILabel alloc] initWithFrame:MakeRect(0, 36, sw, 18)];
     // 1.44: 版本号与 control 同步(Info.plist 为二进制无法随源码递增, 直接用常量, 发版改这里)
-    NSString *ver = @"1.90";
+    NSString *ver = @"1.91";
     [l2 setText:[NSString stringWithFormat:@"版本号：%@", ver]];
     [l2 setFont:[UIFont systemFontOfSize:11.0]];
     [l2 setTextColor:[UIColor colorWithWhite:0.5 alpha:1.0]];
