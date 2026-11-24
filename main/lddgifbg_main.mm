@@ -1177,9 +1177,10 @@ static void LDDIslandLayout(id self) {
     // 1.89: 背景四周外扩 2pt —— 系统岛的黑色底衬(_SBAdaptiveKeyLineBackdropView 实测 129x41)比内容区
     //   (125x37) 四周大 2pt, 背景只铺内容区会在岛边缘留一圈 2pt 黑缝(用户反馈"边缘有一点点缝");
     //   外扩后恰好盖满底衬黑环, 素材可见区域多裁约 1-2%, 无感知。
-    // 1.90: 外扩 2 -> 2.5pt —— 精确 2pt 覆盖时 GIF 边缘与底衬边缘反锯齿混合会留暗色发丝线,
-    //   多 0.5pt 保证完全盖过底衬边缘, 超出部分融入胶囊外阴影区不可见。
-    const double kBleed = 2.5;
+    // 1.92: 外扩恢复 2pt —— 底衬(_SBAdaptiveKeyLineBackdropView 129x41)比内容区(125x37)四周各大 2pt,
+    //   外扩 2pt 后背景 129x41 与底衬完全重合(圆角 20.5 也一致), 不留黑环也不溢出岛外。
+    //   1.90 的 2.5pt 会超出底衬 0.5pt, 解除裁切后在岛外露出一圈。
+    const double kBleed = 2.0;
     [view setFrame:MakeRect(-kBleed, -kBleed, b.w + 2.0 * kBleed, b.h + 2.0 * kBleed)];
     // 1.11: 容器是岛尺寸(40<=w<=460 && 10<=h<=150)就无条件挂到容器铺满 —— 1.9 要求"容器大于内容层"才挂,
     //   通知横幅/展开 容器≈内容层 未触发, 背景挂内容层被其可视区域裁成"左上角一小块"
@@ -1212,6 +1213,11 @@ static void LDDIslandLayout(id self) {
     //   的 layer masksToBounds=YES 把超出内容区的外扩裁掉了。岛的胶囊外形由系统底衬(KeyLine Backdrop,
     //   独立分支)绘制, 容器内系统内容均内缩, 解除裁切不影响系统显示; 背景靠自身胶囊圆角成形并盖满底衬黑环。
     {
+        // 1.92: 关键 —— v1.90 只解除了父层/祖父层, 漏了 self 自身。背景挂在 self 上时(岛宽度 > 父容器,
+        //   BG-EXTEND 不触发), 正是 self.layer 的 masksToBounds 把外扩部分裁掉 => 黑环一直在。
+        //   这里连 self 一起解除; 背景靠自身胶囊圆角成形, 系统图标均内缩在 bounds 内, 不会溢出。
+        id l0 = [self layer];
+        if (l0) ((void(*)(id, SEL, BOOL))objc_msgSend)(l0, sel_registerName("setMasksToBounds:"), NO);
         id p1u = [self superview];
         if (p1u) {
             id l1 = ((id(*)(id, SEL))objc_msgSend)(p1u, sel_registerName("layer"));
@@ -1342,12 +1348,10 @@ static void LDDIslandLayout(id self) {
         id subs = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("subviews"));
         id firstSub = subs ? ((id(*)(id, SEL))objc_msgSend)(subs, sel_registerName("firstObject")) : nil;
         if (firstSub != view) [self insertSubview:view atIndex:0];
-        // 1.9.172: 置顶铺满 (仅背景确实挂在 self 上才调 —— 传入非子视图会抛异常)
-        if (b.h < 65.0) {
-            id subsT = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("subviews"));
-            id lastT = subsT ? ((id(*)(id, SEL))objc_msgSend)(subsT, sel_registerName("lastObject")) : nil;
-            if (lastT != view) [self bringSubviewToFront:view];
-        }
+        // 1.92: 移除 1.9.172 的"置顶铺满"(bringSubviewToFront) —— 它把背景拉到所有子视图之上,
+        //   直接盖住岛上的系统 accessory 图标(26x26 SceneElementAccessoryView: 音乐/录音/定位等)。
+        //   背景始终留在 index0(图标下层), 系统图标内缩在两端, 中间透明区透出背景, 二者各安其位。
+        //   v1.90 解除裁切后背景已能铺到边缘, 不再需要靠置顶补偿。
     }
     objc_autoreleasePoolPop(pool);
     } @catch (id e) { LogReason("LDD-LAYOUT-EXC", e); objc_autoreleasePoolPop(pool); }
@@ -1847,7 +1851,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.91dbg");
+    ProbeWrite("LDD-BUILD v1.92dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
