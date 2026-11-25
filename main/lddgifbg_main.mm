@@ -58,6 +58,10 @@ extern "C" void *class_copyIvarList(Class cls, unsigned int *count);
 extern "C" double CFAbsoluteTimeGetCurrent(void);
 extern "C" const char *ivar_getName(void *ivar);
 extern "C" id object_getIvar(id obj, void *ivar);
+// 1.97: 关联对象手工声明 (本文件不引 objc/runtime.h)
+extern "C" void objc_setAssociatedObject(id object, const void *key, id value, unsigned long policy);
+extern "C" id objc_getAssociatedObject(id object, const void *key);
+#define OBJC_ASSOCIATION_RETAIN 1UL
 extern "C" CGImageRef CGImageSourceCreateImageAtIndex(void *src, NSUInteger idx, void *opts);
 extern "C" NSUInteger CGImageSourceGetCount(void *src);
 extern "C" void *CGImageSourceCreateWithData(void *data, void *opts);
@@ -1037,6 +1041,86 @@ static void ShowBlock(id self, int colorIsRed) {
 }
 
 // ---------- layoutSubviews hook ----------
+// 1.97: 黑边根治 —— 探针实测岛层级: 内容区/黑幕布 125x37, 而 _SBAdaptiveKeyLineBackdropView
+//   (黑色底衬) 129x41, 比内容区四周各大 2pt 且在背景的裁切链之外(兄弟分支)。
+//   v1.89~1.92 的外扩+解除裁切全部无效, 因为背景再大也被裁在 125x37 内, 底衬多出的
+//   2pt 黑环在外面裸露。正确修法: 启用背景时把底衬收缩到与内容区重合(居中),
+//   黑环物理消失, 岛外观=背景药丸本身; 禁用时恢复系统原尺寸/圆角。
+//   只在底衬与自身尺寸接近(±12pt, 即紧凑岛)时生效, 展开态大面板自动跳过。
+static const void *kLDDKeylineOrigFrameKey = &kLDDKeylineOrigFrameKey;
+static const void *kLDDKeylineOrigRadiusKey = &kLDDKeylineOrigRadiusKey;
+static unsigned long gKbScanN;
+static id LDDFindKeylineDeep(id node, int depth) {
+    if (!node || depth <= 0 || gKbScanN > 60) return nil;
+    id subs = ((id(*)(id, SEL))objc_msgSend)(node, sel_registerName("subviews"));
+    if (!subs) return nil;
+    unsigned long n = ((unsigned long(*)(id, SEL))objc_msgSend)(subs, sel_registerName("count"));
+    for (unsigned long k = 0; k < n; k++) {
+        id sv = ((id(*)(id, SEL, unsigned long))objc_msgSend)(subs, sel_registerName("objectAtIndex:"), k);
+        if (!sv) continue;
+        gKbScanN++;
+        const char *scn = object_getClassName(sv);
+        if (scn && strstr(scn, "AdaptiveKeyLineBackdrop")) return sv;
+        id hit = LDDFindKeylineDeep(sv, depth - 1);
+        if (hit) return hit;
+    }
+    return nil;
+}
+static id LDDFindKeylineBackdrop(id selfv) {
+    id anc = selfv;
+    for (int i = 0; i < 6 && anc; i++) {
+        id sup = ((id(*)(id, SEL))objc_msgSend)(anc, sel_registerName("superview"));
+        if (!sup) break;
+        gKbScanN = 0;
+        id hit = LDDFindKeylineDeep(sup, 3);
+        if (hit) return hit;
+        anc = sup;
+    }
+    return nil;
+}
+static void LDDShrinkKeyline(UIView *selfv, BOOL enabled) {
+    @try {
+        UIView *kb = (UIView *)LDDFindKeylineBackdrop((id)selfv);
+        if (!kb) return;
+        CGRect tb = [selfv bounds];
+        id layK = [kb layer];
+        if (enabled) {
+            // 只处理紧凑岛: 底衬与内容区尺寸接近(±12pt)
+            CGRect kf = [kb frame];
+            if (kf.size.width < tb.size.width - 12.0 || kf.size.width > tb.size.width + 12.0
+                || kf.size.height < tb.size.height - 12.0 || kf.size.height > tb.size.height + 12.0) return;
+            if (!objc_getAssociatedObject(kb, kLDDKeylineOrigFrameKey)) {
+                objc_setAssociatedObject(kb, kLDDKeylineOrigFrameKey,
+                    ((id(*)(id, SEL, CGRect))objc_msgSend)((id)objc_getClass("NSValue"),
+                        sel_registerName("valueWithCGRect:"), kf), OBJC_ASSOCIATION_RETAIN);
+                objc_setAssociatedObject(kb, kLDDKeylineOrigRadiusKey,
+                    ((id(*)(id, SEL, double))objc_msgSend)((id)objc_getClass("NSNumber"),
+                        sel_registerName("numberWithDouble:"), [layK cornerRadius]), OBJC_ASSOCIATION_RETAIN);
+            }
+            double cx = kf.origin.x + kf.size.width / 2.0, cy = kf.origin.y + kf.size.height / 2.0;
+            CGRect nf = MakeRect(cx - tb.size.width / 2.0, cy - tb.size.height / 2.0, tb.size.width, tb.size.height);
+            if (kf.origin.x != nf.origin.x || kf.origin.y != nf.origin.y
+                || kf.size.width != nf.size.width || kf.size.height != nf.size.height) {
+                [kb setFrame:nf];
+                [layK setCornerRadius:tb.size.height / 2.0];
+                static int ksLog = 0;
+                if (ksLog < 6) { ksLog++; ProbeWrite("KEYLINE-SHRINK"); }
+            }
+        } else {
+            id of = objc_getAssociatedObject(kb, kLDDKeylineOrigFrameKey);
+            if (of) {
+                CGRect rf = ((CGRect(*)(id, SEL))objc_msgSend)(of, sel_registerName("CGRectValue"));
+                [kb setFrame:rf];
+                id orad = objc_getAssociatedObject(kb, kLDDKeylineOrigRadiusKey);
+                if (orad) [layK setCornerRadius:((double(*)(id, SEL))objc_msgSend)(orad, sel_registerName("doubleValue"))];
+                objc_setAssociatedObject(kb, kLDDKeylineOrigFrameKey, nil, OBJC_ASSOCIATION_RETAIN);
+                objc_setAssociatedObject(kb, kLDDKeylineOrigRadiusKey, nil, OBJC_ASSOCIATION_RETAIN);
+                ProbeWrite("KEYLINE-RESTORE");
+            }
+        }
+    } @catch (NSException *e) { /* 底衬干预失败不影响主流程 */ }
+}
+
 static void LDDIslandLayout(id self) {
     static int first = 0;
     if (!first) { first = 1; ProbeWrite("ISLAND-LAYOUT-ENTERED"); }
@@ -1088,6 +1172,8 @@ static void LDDIslandLayout(id self) {
     }
     if (!show) {
         // 1.42: master OFF - strip background from this tree and tear down media.
+        // 1.97: 同时把黑底衬恢复到系统原尺寸
+        LDDShrinkKeyline(selfv, NO);
         RemoveTagged(self, 9997);
         RemoveTagged(self, 9996);
         RemoveTagged(self, 9999);
@@ -1113,6 +1199,8 @@ static void LDDIslandLayout(id self) {
         if (nwA - gStreamStopTs > 3.0) { StreamStop(); }
         gStreamStopTs = 0;
     }
+    // 1.97: 启用背景时收缩黑底衬, 消除四周 2pt 黑环
+    LDDShrinkKeyline(selfv, YES);
     if (gVideoStopTs && gPlayer) {
         double nwB = CFAbsoluteTimeGetCurrent();
         if (nwB - gVideoStopTs > 3.0) {
@@ -1428,6 +1516,18 @@ static void CtrlLayoutHook(id self, SEL _cmd) {
         }
     }
     if (origCtrlLayout) origCtrlLayout(self, _cmd);
+    // 1.97: 系统布局之后再补一次底衬收缩 —— 防止 origCtrlLayout 内部把底衬 frame 重置回 129x41
+    {
+        const char *cn2 = object_getClassName(self);
+        if (cn2 && (strstr(cn2, "Aperture") || strstr(cn2, "Island"))) {
+            if (cEnabled) {
+                if (bb.w >= 40.0 && bb.w <= 460.0 && bb.h >= 10.0 && bb.h <= 520.0)
+                    LDDShrinkKeyline((UIView *)self, YES);
+            } else {
+                LDDShrinkKeyline((UIView *)self, NO);
+            }
+        }
+    }
 }
 
 // 给 UNNotificationRequest 动态补 iOS16 缺失的私有方法（initWithNotificationRequest: 内部会依次访问这些 selector）
@@ -1832,7 +1932,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.93dbg");
+    ProbeWrite("LDD-BUILD v1.97dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
