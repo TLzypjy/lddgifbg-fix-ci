@@ -1119,7 +1119,7 @@ static void LDDShrinkKeyline(UIView *selfv, BOOL enabled) {
                 ProbeWrite("KEYLINE-RESTORE");
             }
         }
-    } @catch (NSException *e) { /* 底衬干预失败不影响主流程 */ }
+    } @catch (id e) { /* 底衬干预失败不影响主流程 */ }
 }
 
 static void LDDIslandLayout(id self) {
