@@ -785,6 +785,35 @@ static void ConsumeForcePreview(void) {
     ProbeWrite("PREVIEW-CACHE-BUST");
     PostRealNotification();
 }
+// 1.98: 视频后台泄漏治理 —— 横幅/岛关闭后其视图树被销毁, AVPlayerLayer 随之脱离
+//   (superlayer=nil), 但 gPlayer 未暂停, 会带着播放器在后台持续循环解码(耗电发热)。
+//   GIF 路径有 weak 失效自动暂停(STREAM-PAUSE), 视频没有对应机制。借助已有的 1s 兜底轮询
+//   每秒检查一次: 播放层脱离视图树超过 3 秒(给连续通知/重建留缓冲) -> 完全停止并释放。
+static double gVideoOrphanTs = 0;
+static void CheckVideoOrphan(void) {
+    @try {
+        if (!gPlayer) { gVideoOrphanTs = 0; return; }
+        int orphan = 0;
+        if (gPlayerLayer) {
+            if (!((id(*)(id, SEL))objc_msgSend)(gPlayerLayer, sel_registerName("superlayer"))) orphan = 1;
+        } else orphan = 1;
+        if (orphan) {
+            double nw = CFAbsoluteTimeGetCurrent();
+            if (!gVideoOrphanTs) { gVideoOrphanTs = nw; }
+            else if (nw - gVideoOrphanTs > 3.0) {
+                StopVideo();
+                if (gObserver) [[NSNotificationCenter defaultCenter]
+                    removeObserver:gObserver name:@"AVPlayerItemDidPlayToEndTimeNotification" object:gPlayerItem];
+                gPlayerItem = nil; gPlayer = nil; gPlayerLayer = nil;
+                gVideoOrphanTs = 0;
+                ProbeWrite("VIDEO-ORPHAN-STOP");
+            }
+        } else {
+            gVideoOrphanTs = 0;
+        }
+    } @catch (id e) { /* 检查失败不影响主流程 */ }
+}
+
 static void CheckForcePreviewTick(void) {
     double t = CFAbsoluteTimeGetCurrent();
     if (t - gForceLast < 0.05) return;
@@ -792,6 +821,8 @@ static void CheckForcePreviewTick(void) {
     ConsumeForcePreview();
     // bundle __test_notif__ 文件通道(自节流 1s/次): 旧版有人写没人读, 消费端从未被调用
     CheckTestNotifFlag();
+    // 1.98: 视频孤儿播放器检查 (每秒一次, 一次消息发送的开销)
+    CheckVideoOrphan();
 }
 
 // 触发监控: 1.85 起预览消费由 Darwin 通知即时驱动 (bundle notify_post), 此轮询仅作兜底,
@@ -1933,7 +1964,7 @@ static void PostRealNotification(void) {
 
 __attribute__((constructor))
 static void LDDInit(void) {
-    ProbeWrite("LDD-BUILD v1.97dbg");
+    ProbeWrite("LDD-BUILD v1.98dbg");
     ProbeWrite("CONSTRUCTOR-RAN");
     // 1.85: 清理历史日志与废弃辅助文件 (探针日志已停用, 0 常驻 IO)
     unlink("/var/mobile/lddgifbg/__bundle_log__.txt");
