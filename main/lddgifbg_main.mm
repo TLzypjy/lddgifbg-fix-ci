@@ -1087,22 +1087,23 @@ static void LDDShrinkKeyline(UIView *selfv, BOOL enabled) {
         if (enabled) {
             // 只处理紧凑岛: 底衬与内容区尺寸接近(±12pt)
             CGRect kf = [kb frame];
-            if (kf.size.width < tb.size.width - 12.0 || kf.size.width > tb.size.width + 12.0
-                || kf.size.height < tb.size.height - 12.0 || kf.size.height > tb.size.height + 12.0) return;
+            if (kf.w < tb.w - 12.0 || kf.w > tb.w + 12.0
+                || kf.h < tb.h - 12.0 || kf.h > tb.h + 12.0) return;
             if (!objc_getAssociatedObject(kb, kLDDKeylineOrigFrameKey)) {
                 objc_setAssociatedObject(kb, kLDDKeylineOrigFrameKey,
                     ((id(*)(id, SEL, CGRect))objc_msgSend)((id)objc_getClass("NSValue"),
                         sel_registerName("valueWithCGRect:"), kf), OBJC_ASSOCIATION_RETAIN);
                 objc_setAssociatedObject(kb, kLDDKeylineOrigRadiusKey,
                     ((id(*)(id, SEL, double))objc_msgSend)((id)objc_getClass("NSNumber"),
-                        sel_registerName("numberWithDouble:"), [layK cornerRadius]), OBJC_ASSOCIATION_RETAIN);
+                        sel_registerName("numberWithDouble:"),
+                        ((double(*)(id, SEL))objc_msgSend)(layK, sel_registerName("cornerRadius"))),
+                    OBJC_ASSOCIATION_RETAIN);
             }
-            double cx = kf.origin.x + kf.size.width / 2.0, cy = kf.origin.y + kf.size.height / 2.0;
-            CGRect nf = MakeRect(cx - tb.size.width / 2.0, cy - tb.size.height / 2.0, tb.size.width, tb.size.height);
-            if (kf.origin.x != nf.origin.x || kf.origin.y != nf.origin.y
-                || kf.size.width != nf.size.width || kf.size.height != nf.size.height) {
+            double cx = kf.ox + kf.w / 2.0, cy = kf.oy + kf.h / 2.0;
+            CGRect nf = MakeRect(cx - tb.w / 2.0, cy - tb.h / 2.0, tb.w, tb.h);
+            if (kf.ox != nf.ox || kf.oy != nf.oy || kf.w != nf.w || kf.h != nf.h) {
                 [kb setFrame:nf];
-                [layK setCornerRadius:tb.size.height / 2.0];
+                [layK setCornerRadius:tb.h / 2.0];
                 static int ksLog = 0;
                 if (ksLog < 6) { ksLog++; ProbeWrite("KEYLINE-SHRINK"); }
             }
